@@ -1,0 +1,45 @@
+unit enc_lib_user;
+ 
+uses
+     def_io,
+     lib1_enc600_V3_5_b;
+     
+procedure Eth_UserProcess_Main;
+procedure Eth_UserProcess;
+procedure Eth_UserTCP(var dest_ip_addr_T : IpHeader; var source_port_T, dest_port_T, len_T : word; CC_Sock : byte);
+function Eth_UserUDP(var dest_ip_addr_U : IpHeader; var dest_port_U, source_port_U, len_U : word) : word;
+
+
+implementation
+
+procedure Eth_UserProcess_Main;
+begin
+
+end;
+
+procedure Eth_UserProcess;
+begin
+
+end;
+
+procedure Eth_UserTCP(var dest_ip_addr_T : IpHeader; var source_port_T, dest_port_T, len_T : word; CC_Sock : byte);
+begin
+  if source_port_T = HTTP_Port then
+    begin
+      // do something with http request on port 80
+      exit;
+    end;
+
+  if source_port_T = HTTP_send_Port then
+    begin
+
+      exit;
+    end;
+end;
+      
+function Eth_UserUDP(var dest_ip_addr_U : IpHeader; var dest_port_U, source_port_U, len_U : word) : word;
+begin
+  result := 0;
+end;
+
+end.

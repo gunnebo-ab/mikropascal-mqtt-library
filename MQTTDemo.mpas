@@ -1,0 +1,525 @@
+{*
+ * Project name:
+     MQTTDemo (Demonstration of using MQTT)
+ * Copyright:
+     (c) Gunnebo Nordic AB 2017.
+     Credits: Florin Medrea (Ethernet library)
+ * Revision History:
+     20170518:
+       - initial release;
+ * Description:
+     This program demonstrates usage of MQTT library add-on for Florin's Ethernet library.
+ * Test configuration:
+     MCU:             P24FJ256GB206
+     Oscillator:      32.000MHz
+     Ext. Modules:    None.
+     SW:              mikroPascal PRO for dsPIC30/33 and PIC24
+                      http://www.mikroe.com/mikropascal/dspic/
+ * NOTES:
+     - The program demonstrates publishing an MQTT message every 2 seconds
+     - The program is capable of subscribing to an MQTT message that can activate and deactivate a relay
+     - Network configuration is defined in the unit "def_io.mpas"
+     - MQTT features are implemented in "MQTT_lib.mpas"
+ *}
+
+program MQTTDemo;
+
+uses dspic_additional_string_library,
+     lib_Delays_LIO,
+     def_io,
+     lib1_enc600_V3_5_b,
+     enc_lib_user,
+     lib2_enc600_V3_5_b,
+     HTTP_Send,
+     unProcessMQTT,
+     MQTT_lib
+     ;
+    
+procedure Oscillator_Failure; org $06;
+begin
+  reset;
+end;
+
+procedure Address_Error; org $08;
+begin
+  reset;
+end;
+
+procedure Stack_Error; org $0A;
+begin
+  reset;
+end;
+
+procedure Math_Error; org $0C;
+begin
+  reset;
+end;
+
+procedure Int_ovf_UART;  // must be called at 1 ms
+begin
+  inc(UART1_ovf);
+  if inc(UART2_ovf) > 49 then // UART2_Timeout 50ms
+    begin
+      UART2_ovf := 0;
+    end;
+  if inc(UART3_ovf) > 49 then // UART3_Timeout 50ms
+    begin
+      UART3_ovf := 0;
+    end;
+end;
+
+procedure Timer1Int; org $1A; // interrupt at 1ms
+begin
+  T1IF_bit := 0;   // Clear TMR1IF
+  Int_ovf_UART;
+  
+  CounterTask;  // must be called at 1ms
+  if inc(CC100ms) > 99 then
+    begin
+      CC100ms := 0;
+      
+      if vPort1Interval > 0 then inc(CC1);
+            
+      if inc(CC500ms) > 5 then
+        begin
+          CC500ms := 0;
+        end;
+
+      inc(CC1s);
+      inc(CC2s);
+      inc(CC5s);
+      inc(CC10s);
+      inc(CC0_TCP);
+      inc(CC10min);
+    end;
+end;
+
+procedure Uart1Int; org $2A; // Uart1 interrupt, 115200bps, GSM
+begin
+  UART1_ovf := 0;
+  while U1STA.URXDA <> 0 do
+    UART1_ovf := 0;
+  U1RXIF_bit := 0;
+end;
+
+procedure Uart2Int; org $50; // Uart2 interrupt, RS485
+begin
+  repeat
+    Uart2_Read();
+    UART2_ovf := 0;
+  until U2STA.URXDA = 0;
+  U2RXIF_bit := 0;
+end;
+
+procedure Uart3Int; org $B8; // Uart3 interrupt, EXT RS232
+begin
+  repeat
+    rxChar := UART3_Read();
+  until U3STA.URXDA = 0;
+  U3RXIF_bit := 0;
+end;
+
+procedure Interrupt_Init;
+begin
+  T1CON      := $8000;             // Timer1 ON, internal clock FCY, prescaler 1:1
+  PR1        := 15999;             // interrupt at 1ms
+  IPC0       := IPC0 or $5000;     // Interrupt priority level = 5
+  T1IF_bit   := 0;                 // Clear TMR1IF
+  T1IE_bit   := 1;                 // Enable Timer1 interrupts
+  
+  U1RXIF_bit := 0;                 // UART1, 115200bps, GSM
+  U1RXIE_bit := 1;
+
+  U2RXIF_bit := 0;                 // UART2, RS485
+  U2RXIE_bit := 1;
+  
+  U3RXIF_bit := 0;                 // UART3, EXT RS232
+  U3RXIE_bit := 1;
+end;
+
+procedure Network_Init();
+begin
+  // static ip, set in "def_io.mpas"
+  ip_[0]   := IP0;
+  ip_[1]   := IP1;
+  ip_[2]   := IP2;
+  ip_[3]   := IP3;
+  
+  // network mask, set in "def_io.mpas"
+  mask_[0] := MASK0;
+  mask_[1] := MASK1;
+  mask_[2] := MASK2;
+  mask_[3] := MASK3;
+  
+  // gateway, set in "def_io.mpas"
+  gat_[0]  := GATEWAY0;
+  gat_[1]  := GATEWAY1;
+  gat_[2]  := GATEWAY2;
+  gat_[3]  := GATEWAY3;
+  
+  // set the first byte of NTP address to 255 to make NTP inactive
+  eth_ntp_addr[0] := 255;
+end;
+
+procedure Init;
+var i : word;
+Begin
+  CLRWDT;
+
+  delayms(100);
+
+  ANSB := 0x0700;                      // AN8,AN9,AN10
+  ANSC := 0x0000;
+  ANSD := 0x0000;
+  ANSF := 0x0000;
+  ANSG := 0x0000;
+
+  Unlock_IOLOCK();
+
+  PPS_Mapping(26, _INPUT, _SDI2);      // Ethernet
+  PPS_Mapping(19, _OUTPUT, _SDO2);
+  PPS_Mapping(21, _OUTPUT, _SCK2OUT);
+
+  PPS_Mapping(22, _INPUT, _SDI1);      // AT45DB161D, 23K256
+  PPS_Mapping(25, _OUTPUT, _SDO1);
+  PPS_Mapping(20, _OUTPUT, _SCK1OUT);
+  
+  PPS_Mapping(23, _INPUT, _U1RX);       // Uart1 RX, 115200 GSM
+  PPS_Mapping(24, _OUTPUT, _U1TX);      // Uart1 TX, 115200 GSM
+
+  PPS_Mapping(17, _INPUT, _U2RX);       // RS485
+  PPS_Mapping(10, _OUTPUT, _U2TX);
+  
+  PPS_Mapping(12, _INPUT, _U3RX);       // EXT RS232
+  PPS_Mapping(11, _OUTPUT, _U3TX);
+
+  Lock_IOLOCK();
+
+  LED1          := 0;
+  LED1_dir      := 0;
+
+  RELAY1        := 0;
+  RELAY1_dir    := 0;
+
+  S_485         := 0;
+  S_485_dir     := 0;
+  
+  AD_INPUT3_DIR := 1; //  input
+  ANSB8_bit     := 1; // 0- DIGITAL, 1- ANALOG
+
+  AD_INPUT2_DIR := 1; // input
+  ANSB9_bit     := 1; // 0- DIGITAL, 1- ANALOG
+  
+  AD_INPUT2_DIR := 1; // input
+  ANSB10_bit    := 1; // 0- DIGITAL, 1- ANALOG
+
+  CC1s          := 0;
+  CC2s          := 0;
+  CC5s          := 0;
+  CC10s         := 0;
+  CC10min       := 0;
+  
+  Uart1_Init(115200);
+  i             := 0;
+  while i < 8 do
+    begin
+      Uart1_Read;
+      inc(i);
+    end;
+
+  Uart2_Init(9600);
+  i := 0;
+  while i < 8 do
+    begin
+      Uart2_Read;
+      inc(i);
+    end;
+    
+  Uart3_Init(9600);
+  i := 0;
+  while i < 8 do
+    begin
+      Uart3_Read;
+      inc(i);
+    end;
+
+  UART1_ovf           := 0;
+  UART2_ovf           := 0;
+  UART3_ovf           := 0;
+
+  ADC1_Init();
+  
+  Interrupt_Init;
+
+  Mem_Set(@mqttbroker_address_url, 0, 63);
+
+  o_sock                 := Nb_Sock - 8;
+  HTTP_send_Port         := TMR1 + 12345;
+  host_response          := '';
+  
+  mqttbroker_address_url := MQTT_BROKER_ADDRESS;   // set in "def_io.mpas"
+  mqttPublishTopic       := MQTT_PUBLISH_TOPIC;    // set in "def_io.mpas"
+  mqttSubscribeTopic     := MQTT_SUBSCRIBE_TOPIC;  // set in "def_io.mpas"
+  host_response_len      := 0;
+  
+  machine_id             := DEVICE_NAME;           // set in "def_io.mpas"
+  host_response          := 'none';
+
+  rx1Idx                 := 0;
+  rx1DataReady           := 0;
+  CC1                    := 0;
+  
+  Network_Init();
+  MQTT_Init;
+End;
+
+function check_jumper : word;
+begin
+  result := 0;
+  TRISB.6 := 0;
+  TRISB.7 := 1;
+  CNPU2.CN24PUE := 1; // DEBUG MODE, PORTB.6
+  CNPU2.CN25PUE := 1; // DEBUG MODE, PORTB.7
+  nop;
+  LATB.6 := 1;
+  nop;
+  result.0 := PORTB.7;
+  LATB.6 := 0;
+  nop;
+  result.1 := not(PORTB.7);
+  nop;
+  LATB.6 := 1;
+  nop;
+  result.2 := PORTB.7;
+  LATB.6 := 0;
+  nop;
+  result.3 := not(PORTB.7);
+  TRISB.6 := 1;
+end;
+
+procedure pulse_relay_500;
+begin
+  RELAY1 := 1;
+  Wait_With_Eth(500);
+  RELAY1 := 0;
+end;
+
+procedure pulse_relay_5000;
+begin
+  RELAY1 := 1;
+  Wait_With_Eth(5000);
+  RELAY1 := 0;
+end;
+
+procedure pulse_relay_250;
+begin
+  RELAY1 := 1;
+  Wait_With_Eth(250);
+  RELAY1 := 0;
+end;
+
+procedure SendMqtt(var deviceAddress: string[20]; var deviceStatus: string[20]);
+var payload: string[200];
+begin
+    // payload = {"Address":"123456abc", "Status":"Online"}
+    payload := '{';
+    Str_Cat(payload, '"Address":"');
+    Str_Cat(payload, deviceAddress);
+    Str_Cat(payload, '", "Status":"');
+    Str_Cat(payload, deviceStatus);
+    Str_Cat(payload, '"}');
+
+    if SendTCPwait(MQTT_PingReq_(@HTTP_data_out)) = false then
+      Socket[o_sock].State_S := 0
+    else if Is_MQTT_Pingresp_(@host_response) = false then
+      Socket[o_sock].State_S := 0;
+    if Socket[o_sock].State_S <> 2 then
+      begin
+        if OpenTCPConnection <> 0 then
+          begin
+            if SendTCPwait(MQTT_Connect_(@HTTP_data_out, machine_id, 0)) <> 0 then
+              begin
+                if Is_MQTT_Connected_(@host_response) = false then
+                  begin
+                    Socket[o_sock].State_S := 0;
+                  end
+                else
+                  begin
+                    SendTCPwait(MQTT_Subscribe_(@HTTP_data_out, mqttSubscribeTopic, 1, 0));
+                  end;
+              end
+            else
+              begin
+              end;
+          end;
+      end;
+
+    if SendTCP(MQTT_Publish_(@HTTP_data_out, payload, mqttpublishTopic)) = false then
+      begin
+        Socket[o_sock].State_S := 0;
+      end;
+end;
+
+procedure handler_UartGate;
+begin
+  if UART3_data_available <> 0 then        // RS232
+    begin
+      UART3_ovf := 0;
+      UART3_len := 0;
+      UART3_data_available := false;
+    end;
+end;
+
+procedure handler_2sec;
+begin
+  if CC2s > 19 then
+    begin
+      SendMqtt(machine_id, 'Online');
+      CC2s := 0;
+    end;
+end;
+
+procedure handler_5sec;
+begin
+  if CC5s > 49 then
+    begin
+      CC5s := 0;
+     //** refresh MQTT connection
+     if SendTCPwait(MQTT_PingReq_(@HTTP_data_out)) = false then
+        Socket[o_sock].State_S := 0
+      else if Is_MQTT_Pingresp_(@host_response) = false then
+        Socket[o_sock].State_S := 0;
+      if Socket[o_sock].State_S <> 2 then
+        begin
+          if OpenTCPConnection <> 0 then
+            begin
+              if SendTCPwait(MQTT_Connect_(@HTTP_data_out, machine_id, 0)) <> 0 then
+                begin
+                  if Is_MQTT_Connected_(@host_response) = false then
+                    begin
+                      Socket[o_sock].State_S := 0;
+                    end
+                  else
+                    begin
+                      SendTCPwait(MQTT_Subscribe_(@HTTP_data_out, mqttSubscribeTopic, 1, 0));
+                    end;
+                end
+              else
+                begin
+
+                end;
+            end;
+        end;
+   end;
+end;
+
+procedure handler_10sec;
+begin
+  if CC10s > 99 then // 10 sec task
+    begin
+      CC10s := 0;
+    end;
+end;
+
+procedure handler_10min;
+begin
+  if CC10min > 5999 then // 10 min task
+    begin
+      CC10min := 0;
+
+    end;
+end;
+
+procedure handler_1sec;
+begin
+  if CC1s > 9 then
+    begin
+      CC1s := 0;
+    end;
+end;
+
+procedure Str2Lower(var txt_in : string[2048]);
+var i,j,buf : word;
+begin
+  j := Str_Len(txt_in);
+  if j > 2048 then
+    begin
+      j := 2048;
+      txt_in[2048] := 0;
+    end;
+  i := 0;
+  while i < j do
+    begin
+      buf := txt_in[i];
+      if buf >= 'A' then
+        if buf <= 'Z' then txt_in[i] := buf + 32;
+      inc(i);
+    end;
+end;
+
+begin
+  Init;
+  
+  delayms(10);
+  // Ethernet on SPI2
+  Spi2_Init_Advanced(_SPI_MASTER, _SPI_8_BIT, _SPI_PRESCALE_SEC_2, _SPI_PRESCALE_PRI_1,
+                     _SPI_SS_DISABLE, _SPI_DATA_SAMPLE_MIDDLE, _SPI_CLK_IDLE_LOW, _SPI_IDLE_2_ACTIVE);
+  
+  config_default := check_jumper;
+  Eth_Init_;
+
+  UDP_Wait := 3000;
+  DHCP_Enable := false;
+  Wait_for_LAN;
+  UDP_Wait := 1000;
+
+  Mac2Str(eth_mac,mac_);
+  Str_Insert_Chr(mac_,'-',2);
+  Str_Insert_Chr(mac_,'-',5);
+  Str_Insert_Chr(mac_,'-',8);
+  Str_Insert_Chr(mac_,'-',11);
+  Str_Insert_Chr(mac_,'-',14);
+  Str2Lower(mac_);
+  
+  TCP_Open_Port(HTTP_Port);
+  if eth_ntp_addr[0] <> 255 then
+    begin
+      Ntp_query;
+      Wait_With_Eth(300);
+      Ntp_query;
+      Wait_With_Eth(300);
+    end;
+  CC2s := 0;
+  CC5s := 3;
+  CC10s := 5;
+  CC10s_cnt := 2;
+  
+  if OpenTCPConnection <> 0 then
+    begin
+      if SendTCPwait(MQTT_Connect_(@HTTP_data_out, machine_id, 0)) <> 0 then
+        if Is_MQTT_Connected_(@host_response) <> 0 then
+          begin
+            SendTCPwait(MQTT_Subscribe_(@HTTP_data_out, mqttSubscribeTopic, 1, 0));
+          end;
+    end;
+
+  while (PORTB.7 = 0) or (config_default = 15) do
+    begin
+      ClrWDT();
+      Do_EthernetProc;
+      Process_DHCP;
+      handler_1sec;
+      handler_2sec;
+      handler_5sec;
+      handler_10sec;
+      handler_10min;
+      handler_UartGate();
+      
+      temp_global := processTCPresponse();
+      if temp_global <> 255 then
+         begin
+           ProcessMQTTResponse(temp_global);
+         end;
+    end;
+  reset;
+end.

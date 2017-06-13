@@ -1,0 +1,390 @@
+unit HTTP_Send;
+
+uses dspic_additional_string_library,
+     lib_Delays_LIO,
+     def_io,
+     lib1_enc600_V3_5_b,
+     lib2_enc600_V3_5_b,
+     unProcessMQTT;
+
+procedure out_broadcast_string(port : word);
+procedure out_broadcast(port,len : word);
+function OpenTCPConnection : boolean;
+function SendTCP(len : word) : boolean;
+function SendTCPwait(len : word) : boolean;
+function processTCPresponse: byte;
+
+implementation
+
+procedure out_broadcast_string(port : word);
+var broadcast_ip : array[4] of byte;
+var len,i,j : word;
+    buf : string[1300];
+begin
+  broadcast_ip[0] := 255;
+  broadcast_ip[1] := 255;
+  broadcast_ip[2] := 255;
+  broadcast_ip[3] := 255;
+  
+  len := Str_Len(Socket_TCP_buf);
+  j := 0;
+  while len <> 0 do
+    begin
+      i := len;
+      if i > 1280 then i := 1280;
+
+      Mem_Cpy(@buf,@Socket_TCP_buf[j],i);
+      buf[i] := 0;
+
+      Do_EthernetProc;
+      
+      j := i;
+      len := len - i;
+    end;
+end;
+
+procedure out_broadcast(port,len : word);
+var broadcast_ip : array[4] of byte;
+var i,j : word;
+    buf : string[1300];
+begin
+  broadcast_ip[0] := 255;
+  broadcast_ip[1] := 255;
+  broadcast_ip[2] := 255;
+  broadcast_ip[3] := 255;
+
+  j := 0;
+  while len <> 0 do
+    begin
+      i := len;
+      if i > 1280 then i := 1280;
+
+      Mem_Cpy(@buf,@Socket_TCP_buf[j],i);
+      buf[i] := 0;
+
+      Send_UDP_Broadcast(broadcast_ip,port,port,i,buf);
+      Do_EthernetProc;
+
+      j := i;
+      len := len - i;
+    end;
+end;
+
+function processMqttJson(): byte;
+var i, savei : word;
+    txt, address : string[32];
+    targetLength: byte;
+    ch: byte;
+    j: byte;
+begin
+ // {"Address": "AB1235", "RelayId": 1, "RelayState": 1}
+  result := 255;
+
+  // first we find the address, if the message is sent to us
+  txt := '"Address"';
+  targetLength := Str_Len(txt);
+  i := 0;
+  while i < host_response_len do
+    begin
+      if Mem_Cmp(@host_response[i], @txt, targetLength) = 0 then
+        begin
+          result := 254;
+          break;
+        end;
+      inc(i);
+    end;
+  
+  if result <> 254 then // address is not found, exit
+    begin
+      result := 255;
+      exit;
+    end;
+  
+  if result = 254 then
+    begin
+      // extract the destination address
+      i := i + targetLength;
+      // skip over colon ":"
+      ch := host_response[i];
+      while (ch <> 0) and (ch <> ':') do
+        begin
+          inc(i);
+          ch := host_response[i];
+        end;
+      if ch = ':' then
+        inc(i);
+      
+      // find open double quote '"'
+      ch := host_response[i];
+      while (ch <> 0) and (ch <> '"') do
+        begin
+          inc(i);
+          ch := host_response[i];
+        end;
+      if ch = '"' then
+        inc(i);
+
+      // quotation is now opened
+      // now parse until the closed quote '"' then compare the machine_id to what is taken
+
+      j := 0;
+      ch := host_response[i];
+      while (ch <> 0) and (ch <> '"') do
+        begin
+          address[j] := ch;
+          inc(j);
+          inc(i);
+          ch := host_response[i];
+          if j >= 31 then
+            break;
+        end;
+      address[j] := 0;
+      
+      // now compare sent address to the machine_id and exit if not matched
+      if Str_Cmp(address, machine_id) <> 0 then
+        begin
+          result := 255;
+          exit;
+        end;
+    end;
+  
+  //txt := '"RelayId": 1';
+  txt := '"RelayId"';
+  targetLength := Str_Len(txt);
+  if targetLength = 0 then
+    exit;
+  if host_response_len = 0 then
+    exit;
+  
+  i := 0;
+  while i < host_response_len do
+    begin
+      if Mem_Cmp(@host_response[i], @txt, targetLength) = 0 then
+        begin
+          result := 254;
+          break;
+        end;
+      inc(i);
+    end;
+
+  if result = 254 then
+    begin
+      i := i + targetLength;
+      savei := i;
+      txt := '"RelayState": 0';
+      targetLength := Str_Len(txt);
+      while i < host_response_len do
+      begin
+        if Mem_Cmp(@host_response[i], @txt, targetLength) = 0 then
+          begin
+            result := relay_OFF;
+            exit;
+          end;
+        inc(i);
+      end;
+      
+    begin
+      i := savei;
+      txt := '"RelayState": 1';
+      targetLength := Str_Len(txt);
+      while i < host_response_len do
+      begin
+        if Mem_Cmp(@host_response[i], @txt, targetLength) = 0 then
+          begin
+            result := RELAY_ACTIVE;
+            exit;
+          end;
+        inc(i);
+      end;
+    end;
+    end;
+end;
+
+function IsIP(var txtin : string[20]) : byte;
+var txt3 : array[4] of string[3];
+    buf,buf1 : word;
+    i,j,k : word;
+begin
+  result := 0;
+  buf := Str_Len(txtin);
+  if buf < 7 then exit;
+  if buf > 15 then exit;
+  txt3[0] := '';
+  txt3[1] := '';
+  txt3[2] := '';
+  txt3[3] := '';
+  i := 0;
+  j := 0;
+  k := 0;
+  while i < buf do
+    begin
+      buf1 := txtin[i];
+      if buf1 = '.' then
+        begin
+           txt3[j][k] := 0;
+           k := 0;
+           if inc(j) > 3 then exit; // more than 3 dot's
+        end
+      else
+        begin
+          txt3[j][k] := buf1;
+          if inc(k) > 3 then exit; // more than 3 chars
+        end;
+      inc(i);
+    end;
+  txt3[j][k] := 0;
+  i := 0;
+  while i < 4 do
+    begin
+      if Str_Len(txt3[i]) = 0 then exit;
+      if Str2Word(txt3[i]) > 255 then exit;
+      inc(i);
+    end;
+  result := 1;
+end;
+
+
+function OpenTCPConnection : boolean;
+var i : word;
+    tcpResponse: byte;
+label end_end_,again_;
+begin
+  i := 0;
+
+again_:
+
+  Wait_With_Eth(100);
+
+  tcpResponse := processTCPresponse();
+  ProcessMQTTResponse(tcpResponse);
+
+  result := false;
+
+  if Str_Len(mqttbroker_address_url) < 3 then exit;
+
+  if IsIP(mqttbroker_address_url) <> 0 then
+    begin
+      Str2IP(mqttbroker_address_url, server_addr);
+    end
+  else
+  if Dns_Resolve(mqttbroker_address_url, server_addr) = false then
+  if Dns_Resolve(mqttbroker_address_url, server_addr) = false then
+    begin
+      uart3_write_text('DNS fail');
+
+      goto end_end_;
+    end;
+    
+  o_sock := 12;
+
+  tcpResponse := processTCPresponse();
+  ProcessMQTTResponse(tcpResponse);
+  
+  Close_TCP_Connection_Advance(o_sock);   // we use tcp socket 12
+
+  TCP_Close_Port(HTTP_send_Port);
+
+  HTTP_send_Port := HTTP_send_Port + 1;
+
+  if HTTP_send_Port > 65000 then HTTP_send_Port := TMR1 + 12345;
+
+  TCP_Open_Port(HTTP_send_Port);
+
+  if Open_TCP_Connection_Advance(server_addr,1883,HTTP_send_Port,o_sock) <> 0 then
+    begin
+      result := true;
+      exit;
+    end;
+
+end_end_:
+  if i < 2 then
+    begin
+      inc(i);
+      goto again_; // try one more time
+    end;
+end;
+
+function SendTCP(len : word) : boolean;
+var tcpResponse: byte;
+begin
+  Wait_With_Eth(100);
+  
+  tcpResponse := processTCPresponse();
+  ProcessMQTTResponse(tcpResponse);
+  
+  result := false;
+
+  if Socket[o_sock].State_S <> 2 then 
+    exit;
+
+  Socket[o_sock].RAM_ROM := 0;
+  Socket[o_sock].Keep_Alive := true;
+  Socket[o_sock].Exp_Time_Val := 100;
+  Socket[o_sock].Do_Not_Fragment := 1;
+  Socket[o_sock].Start_addr := @HTTP_data_out;
+  Socket[o_sock].Stop_addr := Socket[o_sock].Start_addr + len;
+
+  CC0_TCP := 0;
+  while Socket[o_sock].State_S = 2 do      // while connected
+    begin
+      if CC0_TCP > 49 then break; // fail in 4 sec
+      if Socket[o_sock].Start_addr = Socket[o_sock].Stop_addr then 
+        begin
+          result := true;
+          exit;
+        end;
+      Do_EthernetProc;
+      Process_DHCP;
+    end;
+end;
+
+function SendTCPwait(len : word) : boolean;
+var i: word;
+    tcpResponse: byte;
+begin
+  Wait_With_Eth(100);
+
+  tcpResponse := processTCPresponse();
+  ProcessMQTTResponse(tcpResponse);
+
+  result := false;
+
+  if Socket[o_sock].State_S <> 2 then 
+    begin
+      exit;
+    end;
+
+  Socket[o_sock].RAM_ROM := 0;
+  Socket[o_sock].Keep_Alive := true;
+  Socket[o_sock].Exp_Time_Val := 100;
+  Socket[o_sock].Do_Not_Fragment := 1;
+  Socket[o_sock].Start_addr := @HTTP_data_out;
+  Socket[o_sock].Stop_addr := Socket[o_sock].Start_addr + len;
+  
+  host_response := '';
+  host_response_len := 0;
+  CC0_TCP := 0;
+  while Socket[o_sock].State_S = 2 do      // while connected
+    begin
+      if CC0_TCP > 49 then break; // fail in 4 sec
+      if host_response_len <> 0 then 
+        begin
+          result := true;
+          break;
+        end;
+      Do_EthernetProc;
+      Process_DHCP;
+    end;
+end;
+
+function processTCPresponse: byte;
+begin
+  result := 255;
+  if host_response_len <> 0 then
+    begin
+      result := processMqttJson();
+      host_response_len := 0;
+    end;
+end;
+
+end.

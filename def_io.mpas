@@ -1,0 +1,124 @@
+unit def_io;
+
+////////////////////////////////////////////////////////////////////////////////
+const DEVICE_NAME          = 'myMQTTDevice';
+
+const MQTT_PUBLISH_TOPIC   = 'MQTTDemoTx';
+const MQTT_SUBSCRIBE_TOPIC = 'MQTTDemoRx';
+const MQTT_BROKER_ADDRESS  = '192.168.255.96';
+
+// static ip = 192.168.255.92
+const IP0 = 192;
+const IP1 = 168;
+const IP2 = 255;
+const IP3 =  92;
+
+// network mask = 255.255.255.0
+const MASK0 = 255;
+const MASK1 = 255;
+const MASK2 = 255;
+const MASK3 =   0;
+
+// gateway = 192.168.255.1
+const GATEWAY0 = 192;
+const GATEWAY1 = 168;
+const GATEWAY2 = 255;
+const GATEWAY3 =   1;
+////////////////////////////////////////////////////////////////////////////////
+
+const OUTPUT_LOW = 8;
+const OUTPUT_HIGH = 9;
+
+const RELAY_OFF = 0;
+const RELAY_ACTIVE  = 1;
+
+const HTTP_Port = 80;
+
+const RX1_BUFFER_SIZE = 300;
+
+var ENC_CS : sbit at LATE.7;           // SPI2
+var ENC_CS_dir : sbit at TRISE.7;
+var ENC_INT : sbit at PORTG.3;
+var ENC_INT_dir : sbit at TRISG.3;
+
+var DF_CS : sbit at LATE.6;         // SPI1
+var DF_CS_dir : sbit at TRISE.6;
+
+var SRAM_CS : sbit at LATE.5;            // SPI1
+var SRAM_CS_dir : sbit at TRISE.5;
+
+var LED1 : sbit at LATB.0;
+var LED1_dir : sbit at TRISB.0;
+
+var RELAY1 : sbit at LATC.14;
+var RELAY1_dir : sbit at TRISC.14;
+
+var S_485 : sbit at LATB.15;
+var S_485_dir : sbit at TRISB.15;
+
+var AD_INPUT1: sbit at PORTB.10;
+var AD_INPUT1_DIR: sbit at TRISB.10;
+
+var AD_INPUT2: sbit at PORTB.9;
+var AD_INPUT2_DIR: sbit at TRISB.9;
+
+var AD_INPUT3: sbit at PORTB.8;
+var AD_INPUT3_DIR: sbit at TRISB.8;
+
+var
+    DHCP_flag__ : byte;
+    machine_id : string[64];                   // machine_id, string
+    ip_,
+    gat_,
+    mask_,
+    dns_ : array[4] of byte;
+    mac_ : string[24];
+    CC100ms,
+    CC1s,
+    CC2s,
+    CC5s,
+    CC10s,
+    CC500ms,
+    CC10min : word;
+    config_default : byte;
+
+    Socket_TCP_buf : string[3072];
+    HTTP_data_out  : string[3072];
+    host_response  : string[3072];
+
+    CC10s_cnt : byte;
+
+    UART1_ovf : word;
+    UART2_ovf : word;
+    UART2_data_available : boolean;
+
+    UART3_len : word;
+    UART3_ovf : word;
+    UART3_data_available : boolean;
+    
+    mqttbroker_address_url: string[70];
+    mqttPublishTopic: string[36];
+    mqttSubscribeTopic: string[36];
+    
+    server_addr : array[4] of byte;
+    o_sock : byte;
+    HTTP_send_Port,
+    CC0_TCP : word;
+    host_response_len : word;
+    
+    an1Input: word;
+
+    Digital_Output: byte;
+
+    vPort1Interval : byte;
+    CC1 : word;
+
+    rx1Idx: word;
+    rxChar : byte;
+    rx1DataReady : byte;
+    SendCheckAlive1 : byte;
+    temp_global: byte;
+    
+implementation
+
+end.

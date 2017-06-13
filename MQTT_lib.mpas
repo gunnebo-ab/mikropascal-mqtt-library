@@ -1,0 +1,479 @@
+{*
+ * Library name:
+     MQTT_lib
+ * Copyright:
+     (c) Gunnebo Nordic AB 2017.
+     Credits: Florin Medrea
+ * Revision History:
+     20170518:
+       - initial release;
+ * Description:
+     This library is MQTT add-on for Florin's Ethernet library.
+ *}
+unit MQTT_lib;
+
+uses dspic_additional_string_library,
+     Lib_Delays_LIO;
+
+procedure MQTT_Init;
+function MQTT_Connect_(pt : ^byte; var clientID : string[64]; MQTT_flag_ : byte) : word;
+function Is_MQTT_Connected_(pt : ^byte) : boolean;
+function MQTT_Publish_(pt : ^byte; var payload : string[1024]; var topic : string[64]) : word;
+function MQTT_Publish_1(pt : ^byte; var payload : string[128]; var topic : string[64]; messageID : integer) : word;
+function MQTT_Subscribe_(pt : ^byte; var topic : string[64]; messageID : integer; qos : byte) : word;
+function MQTT_Disconnect_(pt : ^byte) : word;
+function MQTT_PingReq_(pt : ^byte) : word;
+function Is_MQTT_Pingresp_(pt : ^byte) : boolean;
+
+const MQTT_connected  = $00;
+
+const MQTT_connect    = $10;
+const MQTT_connack    = $20;
+const MQTT_publish    = $30;
+const MQTT_puback     = $40;
+const MQTT_pubrec     = $50;
+const MQTT_pubrel     = $60;
+const MQTT_pubcomp    = $70;
+const MQTT_subscribe  = $80;
+const MQTT_suback     = $90;
+const MQTT_unsubscribe = $A0;
+const MQTT_unsuback   = $B0;
+const MQTT_pingreq    = $C0;
+const MQTT_pingresp   = $D0;
+const MQTT_disconnect = $E0;
+
+const MQTT_dup        = $08;
+const MQTT_qos2       = $04;
+const MQTT_qos1       = $02;
+const MQTT_retain     = $01;
+
+const MQTT_keepalive : word = 100;
+
+const MQTT_setclean    = $02;    // MQTT_flag.1
+const MQTT_willflag    = $04;    // MQTT_flag.2
+const MQTT_willQOS_lsb = $08;    // MQTT_flag.3
+const MQTT_willQOS_msb = $10;    // MQTT_flag.4
+const MQTT_willretain  = $20;    // MQTT_flag.5
+
+var MQTT_password : string[16];
+    MQTT_username : string[16];
+    
+implementation
+
+procedure MQTT_Init;
+begin
+  MQTT_password := '';  // max 15 char
+  MQTT_username := '';  // max 15 char
+end;
+
+function MQTT_Connect_(pt : ^byte; var clientID : string[64]; MQTT_flag_ : byte) : word;
+var lci,lp,lu : word;
+begin
+  lci := Str_Len(clientID);
+  lp := Str_Len(MQTT_password);
+  lu := Str_Len(MQTT_username);
+
+  result := lci + 14;
+  if lp <> 0 then
+    begin
+      result := result + lp + 2;
+      MQTT_flag_.6 := 1; // password
+    end;
+  if lu <> 0 then
+    begin
+      result := result + lu + 2;
+      MQTT_flag_.7 := 1; // username
+    end;
+
+  pt^ := MQTT_connect;
+  inc(pt);
+  if result >= 128 then
+    begin
+      pt^ := word((result mod 128) or $80);
+      inc(pt);
+      pt^ := word(result div 128);
+      inc(pt);
+    end
+  else
+    begin
+      pt^ := result;
+      inc(pt);
+    end;
+  pt^ := $00;
+  inc(pt);
+  pt^ := $06;
+  inc(pt);
+  pt^ := 'M';  inc(pt);
+  pt^ := 'Q';  inc(pt);
+  pt^ := 'I';  inc(pt);
+  pt^ := 's';  inc(pt);
+  pt^ := 'd';  inc(pt);
+  pt^ := 'p';  inc(pt);
+  pt^ := $03;  inc(pt);
+
+  pt^ := MQTT_flag_;
+  inc(pt);
+  pt^ := Hi(MQTT_keepalive);
+  inc(pt);
+  pt^ := Lo(MQTT_keepalive);
+  inc(pt);
+  pt^ := Hi(lci);
+  inc(pt);
+  pt^ := Lo(lci);
+  inc(pt);
+  Mem_Cpy(pt,@clientID,lci);
+  pt := pt + lci;
+
+  if lp <> 0 then
+    begin
+      pt^ := Hi(lp);
+      inc(pt);
+      pt^ := Lo(lp);
+      inc(pt);
+      Mem_Cpy(pt,@MQTT_password,lp);
+      pt := pt + lp;
+    end;
+
+  if lu <> 0 then
+    begin
+      pt^ := Hi(lu);
+      inc(pt);
+      pt^ := Lo(lu);
+      inc(pt);
+      Mem_Cpy(pt, @MQTT_username,lu);
+    end;
+
+  result := result + 2;
+end;
+
+function Is_MQTT_Connected_(pt : ^byte) : boolean;
+var pt1 : ^byte;
+begin
+  pt1 := pt + 3;
+  if ((pt^ and $F0) = MQTT_connack) and (pt1^ = MQTT_connected) then result := true
+  else result := false;
+end;
+
+function MQTT_Publish_(pt : ^byte; var payload : string[1024]; var topic : string[64]) : word;
+var lt,lp : word;
+begin
+  lt := Str_Len(topic);
+  lp := Str_Len(payload);
+
+  result := lt + lp + 2;
+
+  pt^ := MQTT_publish;
+  inc(pt);
+  if result >= 128 then
+    begin
+      pt^ := word((result mod 128) or $80);
+      inc(pt);
+      pt^ := word(result div 128);
+      inc(pt);
+      result := result + 1;
+    end
+  else
+    begin
+      pt^ := result;
+      inc(pt);
+    end;
+  pt^ := Hi(lt);
+  inc(pt);
+  pt^ := Lo(lt);
+  inc(pt);
+  Mem_Cpy(pt,@topic,lt);
+  pt := pt + lt;
+  Mem_Cpy(pt,@payload,lp);
+
+  result := result + 2;
+end;
+
+function MQTT_Publish_1(pt : ^byte; var payload : string[128]; var topic : string[64]; messageID : integer) : word;
+var lt,lp : word;
+begin
+  lt := Str_Len(topic);
+  lp := Str_Len(payload);
+
+  result := lt + lp + 4;
+
+  pt^ := MQTT_publish + MQTT_qos1;
+  inc(pt);
+  if result >= 128 then
+    begin
+      pt^ := word((result mod 128) or $80);
+      inc(pt);
+      pt^ := word(result div 128);
+      inc(pt);
+    end
+  else
+    begin
+      pt^ := result;
+      inc(pt);
+    end;
+  pt^ := Hi(lt);
+  inc(pt);
+  pt^ := Lo(lt);
+  inc(pt);
+  Mem_Cpy(pt,@topic,lt);
+  pt := pt + lt;
+  pt^ := Hi(messageID);
+  inc(pt);
+  pt^ := Lo(messageID);
+  inc(pt);
+  Mem_Cpy(pt,@payload,lp);
+
+  result := result + 2;
+end;
+
+function Is_MQTT_PubAck_(pt : ^byte; messageID : integer) : boolean;
+var buf : integer;
+begin
+  result := false;
+  if (pt^ and $F0) = MQTT_puback then
+    begin
+      pt := pt + 2;
+      Hi(buf) := pt^;
+      inc(pt);
+      Lo(buf) := pt^;
+      if buf = messageID then result := true;
+    end;
+end;
+
+function MQTT_Publish_2(pt : ^byte; var payload : string[128]; var topic : string[64]; messageID : integer) : word;
+var lt,lp : word;
+begin
+  lt := Str_Len(topic);
+  lp := Str_Len(payload);
+
+  result := lt + lp + 4;
+
+  pt^ := MQTT_publish + MQTT_qos2;
+  inc(pt);
+  if result >= 128 then
+    begin
+      pt^ := word((result mod 128) or $80);
+      inc(pt);
+      pt^ := word(result div 128);
+      inc(pt);
+    end
+  else
+    begin
+      pt^ := result;
+      inc(pt);
+    end;
+  pt^ := Hi(lt);
+  inc(pt);
+  pt^ := Lo(lt);
+  inc(pt);
+  Mem_Cpy(pt,@topic,lt);
+  pt := pt + lt;
+  pt^ := Hi(messageID);
+  inc(pt);
+  pt^ := Lo(messageID);
+  inc(pt);
+  Mem_Cpy(pt,@payload,lp);
+
+  result := result + 2;
+end;
+
+function Is_MQTT_PubRec_(pt : ^byte; messageID : integer) : boolean;
+var buf : integer;
+begin
+  result := false;
+  if (pt^ and $F0) = MQTT_pubrec then
+    begin
+      pt := pt + 2;
+      Hi(buf) := pt^;
+      inc(pt);
+      Lo(buf) := pt^;
+      if buf = messageID then result := true;
+    end;
+end;
+
+function Is_MQTT_PubRel_(pt : ^byte; messageID : integer) : boolean;
+var buf : integer;
+begin
+  result := false;
+  if pt^ = (MQTT_pubrel + MQTT_Qos1) then
+    begin
+      pt := pt + 2;
+      Hi(buf) := pt^;
+      inc(pt);
+      Lo(buf) := pt^;
+      if buf = messageID then result := true;
+    end;
+end;
+
+function MQTT_PubRel_(pt : ^byte; messageID : integer) : word;
+begin
+  pt^ := MQTT_pubrel + MQTT_Qos1;
+  inc(pt);
+  pt^ := $02;
+  inc(pt);
+  pt^ := Hi(messageID);
+  inc(pt);
+  pt^ := Lo(messageID);
+
+  result := 4;
+end;
+
+function Is_MQTT_PubComp_(pt : ^byte; messageID : integer) : boolean;
+var buf : integer;
+begin
+  result := false;
+  if (pt^ and $F0) = MQTT_pubcomp then
+    begin
+      pt := pt + 2;
+      Hi(buf) := pt^;
+      inc(pt);
+      Lo(buf) := pt^;
+      if buf = messageID then result := true;
+    end;
+end;
+
+function MQTT_PubComp_(pt : ^byte; messageID : integer) : word;
+begin
+  pt^ := MQTT_pubcomp;
+  inc(pt);
+  pt^ := $02;
+  inc(pt);
+  pt^ := Hi(messageID);
+  inc(pt);
+  pt^ := Lo(messageID);
+
+  result := 4;
+end;
+
+function MQTT_Subscribe_(pt : ^byte; var topic : string[64]; messageID : integer; qos : byte) : word;
+var lt : word;
+begin
+  lt := Str_Len(topic);
+
+  result := lt + 5;
+
+  pt^ := MQTT_subscribe + MQTT_qos1;
+  inc(pt);
+  if result >= 128 then
+    begin
+      pt^ := word((result mod 128) or $80);
+      inc(pt);
+      pt^ := word(result div 128);
+      inc(pt);
+    end
+  else
+    begin
+      pt^ := result;
+      inc(pt);
+    end;
+  pt^ := Hi(messageID);
+  inc(pt);
+  pt^ := Lo(messageID);
+  inc(pt);
+  pt^ := Hi(lt);
+  inc(pt);
+  pt^ := Lo(lt);
+  inc(pt);
+  Mem_Cpy(pt,@topic,lt);
+  pt := pt + lt;
+  pt^ := qos;
+
+  result := result + 2;
+end;
+
+function Is_MQTT_Subscribed_(pt : ^byte; messageID : integer) : boolean;
+var buf : integer;
+begin
+  result := false;
+  if (pt^ and $F0) = MQTT_suback then
+    begin
+      pt := pt + 2;
+      Hi(buf) := pt^;
+      inc(pt);
+      Lo(buf) := pt^;
+      if buf = messageID then result := true;
+    end;
+end;
+
+function MQTT_Unsubscribe_(pt : ^byte; var topic : string[64]; messageID : integer) : word;
+var lt : word;
+begin
+  lt := Str_Len(topic);
+
+  result := lt + 4;
+
+  pt^ := MQTT_unsubscribe + MQTT_qos1;
+  inc(pt);
+  if result >= 128 then
+    begin
+      pt^ := word((result mod 128) or $80);
+      inc(pt);
+      pt^ := word(result div 128);
+      inc(pt);
+    end
+  else
+    begin
+      pt^ := result;
+      inc(pt);
+    end;
+  pt^ := Hi(messageID);
+  inc(pt);
+  pt^ := Lo(messageID);
+  inc(pt);
+  pt^ := Hi(lt);
+  inc(pt);
+  pt^ := Lo(lt);
+  inc(pt);
+  Mem_Cpy(pt,@topic,lt);
+
+  result := result + 2;
+end;
+
+function Is_MQTT_UnsubAck_(pt : ^byte; messageID : integer) : boolean;
+var buf : integer;
+begin
+  result := false;
+  if (pt^ and $F0) = MQTT_unsuback then
+    begin
+      pt := pt + 2;
+      Hi(buf) := pt^;
+      inc(pt);
+      Lo(buf) := pt^;
+      if buf = messageID then result := true;
+    end;
+end;
+
+function MQTT_PingReq_(pt : ^byte) : word;
+begin
+  pt^ := MQTT_pingreq;
+  inc(pt);
+  pt^ := $00;
+
+  result := 2;
+end;
+
+function Is_MQTT_Pingresp_(pt : ^byte) : boolean;
+var buf : integer;
+begin
+  result := false;
+  if (pt^ and $F0) = MQTT_pingresp then
+    begin
+      result := true;
+    end;
+end;
+
+function MQTT_Disconnect_(pt : ^byte) : word;
+begin
+  pt^ := MQTT_disconnect;
+  inc(pt);
+  pt^ := $00;
+
+  result := 2;
+end;
+
+function Is_MQTT_Arrived_(pt : ^byte) : boolean;
+begin
+  if (pt^ = $30) then result := true
+  else result := false;
+end;
+
+end.

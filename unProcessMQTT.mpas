@@ -1,0 +1,29 @@
+unit unProcessMQTT;
+
+uses def_io;
+
+procedure ProcessMQTTResponse(responseIndex: byte);
+
+implementation
+
+procedure ProcessMQTTCommand(commandIndex: byte);
+var dat: array[3] of byte;
+begin
+      case commandIndex of
+            OUTPUT_HIGH:  //
+                   begin
+                     RELAY1 := 1;
+                   end;
+            OUTPUT_LOW:  //
+                   begin
+                     RELAY1 := 0;
+                   end;
+      end; // case
+end;
+
+procedure ProcessMQTTResponse(responseIndex: byte;);
+begin
+  ProcessMQTTCommand(responseIndex);
+end;
+
+end.
